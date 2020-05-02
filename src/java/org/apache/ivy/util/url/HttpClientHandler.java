@@ -134,7 +134,7 @@ public class HttpClientHandler extends AbstractURLHandler {
         try {
             put.setRequestEntity(new FileRequestEntity(src));
             int statusCode = client.executeMethod(put);
-            validatePutStatusCode(dest, statusCode, null);
+            validatePutStatusCode(dest, statusCode, null, null);
         } finally {
             put.releaseConnection();
         }

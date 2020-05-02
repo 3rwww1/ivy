@@ -40,7 +40,6 @@ import org.apache.ivy.util.Message;
 public class BasicURLHandler extends AbstractURLHandler {
 
     private static final int BUFFER_SIZE = 64 * 1024;
-    private static final int ERROR_BODY_TRUNCATE_LEN = 512;
 
     private static final class HttpStatus {
         static final int SC_OK = 200;
@@ -95,36 +94,6 @@ public class BasicURLHandler extends AbstractURLHandler {
             disconnect(con);
         }
         return UNAVAILABLE;
-    }
-
-    /**
-     * Extract the charset from the Content-Type header string, or default to ISO-8859-1 as per
-     * rfc2616-sec3.html#sec3.7.1 .
-     * 
-     * @param contentType
-     *            the Content-Type header string
-     * @return the charset as specified in the content type, or ISO-8859-1 if unspecified.
-     */
-    public static String getCharSetFromContentType(String contentType) {
-
-        String charSet = null;
-
-        if (contentType != null) {
-            String[] elements = contentType.split(";");
-            for (int i = 0; i < elements.length; i++) {
-                String element = elements[i].trim();
-                if (element.toLowerCase().startsWith("charset=")) {
-                    charSet = element.substring("charset=".length());
-                }
-            }
-        }
-
-        if (charSet == null || charSet.length() == 0) {
-            // default to ISO-8859-1 as per rfc2616-sec3.html#sec3.7.1
-            charSet = "ISO-8859-1";
-        }
-
-        return charSet;
     }
 
     private boolean checkStatusCode(URL url, HttpURLConnection con) throws IOException {
@@ -262,49 +231,13 @@ public class BasicURLHandler extends AbstractURLHandler {
                     /* ignored */
                 }
             }
-
-            // initiate the connection
-            int responseCode = conn.getResponseCode();
-
-            String extra = "";
-            InputStream errorStream = conn.getErrorStream();
-            if(errorStream != null) {
-                InputStream decodingStream = getDecodingInputStream(conn.getContentEncoding(), errorStream);
-                byte[] truncated = readTruncated(decodingStream, ERROR_BODY_TRUNCATE_LEN);
-                String charSet = getCharSetFromContentType(conn.getContentType());
-                extra = "; Response Body: " + new String(truncated, charSet);
-            }
-
-            validatePutStatusCode(dest, responseCode, conn.getResponseMessage() + extra);
+            validatePutStatusCode(dest, conn);
         } finally {
             disconnect(conn);
         }
     }
 
-    private byte[] readTruncated(InputStream is, int maxLen) throws IOException{
-        ByteArrayOutputStream os = new ByteArrayOutputStream(maxLen);
-        try{
-            int count = 0;
-            int b = is.read();
-            boolean truncated = false;
-            while (!truncated && b >= 0) {
-                if (count >= maxLen) {
-                    truncated = true;
-                } else {
-                    os.write(b);
-                    count += 1;
-                    b = is.read();
-                }
-            }
-            return os.toByteArray();
-        }finally {
-            try {
-                is.close();
-            } catch (IOException e) {
-                /* ignored */
-            }
-        }
-    }
+
 
     private void disconnect(URLConnection con) {
         if (con instanceof HttpURLConnection) {

@@ -18,6 +18,7 @@
 package org.apache.ivy.util.url;
 
 import java.io.BufferedInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
@@ -25,6 +26,8 @@ import java.net.MalformedURLException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URL;
+import java.util.List;
+import java.util.Map;
 import java.util.regex.Pattern;
 import java.util.zip.DataFormatException;
 import java.util.zip.GZIPInputStream;
@@ -34,6 +37,7 @@ import java.util.zip.InflaterInputStream;
 public abstract class AbstractURLHandler implements URLHandler {
     
     private static final Pattern ESCAPE_PATTERN = Pattern.compile("%25([0-9a-fA-F][0-9a-fA-F])");
+    private static final int ERROR_BODY_TRUNCATE_LEN = 512;
 
     // the request method to use. TODO: don't use a static here
     private static int requestMethod = REQUEST_METHOD_HEAD;
@@ -62,8 +66,86 @@ public abstract class AbstractURLHandler implements URLHandler {
         return getURLInfo(url, timeout).getLastModified();
     }
 
-    protected void validatePutStatusCode(
-            URL dest, int statusCode, String statusMessage) throws IOException {
+    /**
+     * Extract the charset from the Content-Type header string, or default to ISO-8859-1 as per
+     * rfc2616-sec3.html#sec3.7.1 .
+     *
+     * @param contentType
+     *            the Content-Type header string
+     * @return the charset as specified in the content type, or ISO-8859-1 if unspecified.
+     */
+    public static String getCharSetFromContentType(String contentType) {
+
+        String charSet = null;
+
+        if (contentType != null) {
+            String[] elements = contentType.split(";");
+            for (int i = 0; i < elements.length; i++) {
+                String element = elements[i].trim();
+                if (element.toLowerCase().startsWith("charset=")) {
+                    charSet = element.substring("charset=".length());
+                }
+            }
+        }
+
+        if (charSet == null || charSet.length() == 0) {
+            // default to ISO-8859-1 as per rfc2616-sec3.html#sec3.7.1
+            charSet = "ISO-8859-1";
+        }
+
+        return charSet;
+    }
+
+    private byte[] readTruncated(InputStream is, int maxLen) throws IOException{
+        ByteArrayOutputStream os = new ByteArrayOutputStream(maxLen);
+        try{
+            int count = 0;
+            int b = is.read();
+            boolean truncated = false;
+            while (!truncated && b >= 0) {
+                if (count >= maxLen) {
+                    truncated = true;
+                } else {
+                    os.write(b);
+                    count += 1;
+                    b = is.read();
+                }
+            }
+            return os.toByteArray();
+        }finally {
+            try {
+                is.close();
+            } catch (IOException e) {
+                /* ignored */
+            }
+        }
+    }
+
+    private String getExtraErrorMessage(HttpURLConnection conn) throws IOException {
+        String extra = "";
+        InputStream errorStream = conn.getErrorStream();
+        if (errorStream != null) {
+            InputStream decodingStream = getDecodingInputStream(conn.getContentEncoding(), errorStream);
+            byte[] truncated = readTruncated(decodingStream, ERROR_BODY_TRUNCATE_LEN);
+            String charSet = getCharSetFromContentType(conn.getContentType());
+            extra = "; Response Body: " + new String(truncated, charSet);
+        }
+        return extra;
+    }
+
+    private String buildPutExceptionMessage(URL dest, int statusCode, String statusMessage, HttpURLConnection conn) throws IOException {
+        StringBuilder builder = new StringBuilder("(body = ");
+        builder.append(conn.getContent());
+        for (Map.Entry<String, List<String>> header : conn.getHeaderFields().entrySet()) {
+            builder.append(header.getKey());
+            builder.append(String.join(" ", header.getValue()));
+        }
+        builder.append(")");
+
+        return builder.toString();
+    }
+
+    protected void validatePutStatusCode(URL dest, int statusCode, String message, String exceptionMessage) throws IOException{
         switch (statusCode) {
             case HttpURLConnection.HTTP_OK:
                 /* intentional fallthrough */
@@ -76,12 +158,20 @@ public abstract class AbstractURLHandler implements URLHandler {
             case HttpURLConnection.HTTP_UNAUTHORIZED:
                 /* intentional fallthrough */
             case HttpURLConnection.HTTP_FORBIDDEN:
-                throw new IOException("Access to URL " + dest + " was refused by the server" 
-                    + (statusMessage == null ? "" : ": " + statusMessage));
+                throw new IOException("Access to URL " + dest + " was refused by the server" + ": " + message);
             default:
-                throw new IOException("PUT operation to URL " + dest + " failed with status code " 
-                    + statusCode + (statusMessage == null ? "" : ": " + statusMessage));
+                throw new IOException("PUT operation to URL " + dest + " failed with status code " +
+                                statusCode +
+                                ": " + exceptionMessage);
         }
+    }
+
+    protected void validatePutStatusCode(URL dest, HttpURLConnection con) throws IOException {
+        int statusCode = con.getResponseCode();
+        String extra = getExtraErrorMessage(con);
+        String statusMessage = con.getResponseMessage() + extra;
+        String exceptionMessage = buildPutExceptionMessage(dest, statusCode, statusMessage, con);
+        validatePutStatusCode(dest, statusCode, statusMessage, exceptionMessage);
     }
     
     public void setRequestMethod(int requestMethod) {
